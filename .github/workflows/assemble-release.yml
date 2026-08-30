@@ -1,0 +1,68 @@
+name: Assemble release asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: v0.4.4
+      basename:
+        description: Final asset filename
+        required: true
+        default: ModMata-win32-x64-v0.4.4.zip
+      sha256:
+        description: Expected SHA-256 of the final asset
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      BASENAME: ${{ inputs.basename }}
+      EXPECTED_SHA256: ${{ inputs.sha256 }}
+    steps:
+      - name: Download all parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p parts
+          gh release download "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$BASENAME.part*" \
+            --dir parts
+          count=$(find parts -maxdepth 1 -type f -name "$BASENAME.part*" | wc -l)
+          test "$count" -gt 1
+          echo "Downloaded $count parts"
+
+      - name: Assemble and verify ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat parts/"$BASENAME".part* > "$BASENAME"
+          echo "$EXPECTED_SHA256  $BASENAME" | sha256sum --check --strict
+          unzip -tqq "$BASENAME"
+          stat --printf='Final size: %s bytes\n' "$BASENAME"
+
+      - name: Upload final asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$BASENAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+
+      - name: Remove temporary parts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq ".assets[] | select(.name | startswith(\"$BASENAME.part\")) | .id")
+          for id in $ids; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id"
+          done
